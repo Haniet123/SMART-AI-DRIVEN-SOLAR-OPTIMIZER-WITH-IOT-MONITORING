@@ -1,0 +1,157 @@
+#define BLYNK_TEMPLATE_ID "TMPL2Ji-8CyJf"
+#define BLYNK_TEMPLATE_NAME "SOLAR PANEL CONTROL"
+#define BLYNK_AUTH_TOKEN "uAIeWJRlpQLK0-MYlDpIq5rXvyIqvmZ3"
+
+#include <WiFi.h>
+#include <ThingSpeak.h>
+#include <BlynkSimpleEsp32.h>   
+#include <ESP32Servo.h>  // Servo library
+
+// WiFi credentials
+const char* ssid = "Sammy";
+const char* password = "0244455269";
+
+// ThingSpeak settings
+unsigned long channelID = 2996821;
+const char* writeAPIKey = "CZERZK4J3NNTFJ4S";
+
+// Servo motor objects
+Servo servo_v; // Vertical movement (North/South)
+Servo servo_h; // Horizontal movement (East/West)
+Servo cleaning_motor; // Cleaning servo motor
+
+// Sensor pins
+const int voltagePin = 27;
+const int currentPin = 39; // Reserved for future use
+
+const int ldr1Pin = 32; // East
+const int ldr2Pin = 33; // West
+const int ldr3Pin = 34; // South
+const int ldr4Pin = 35; // North
+
+// LED GPIOs
+const int led4 = 5;
+
+WiFiClient client;
+
+unsigned long previousMillis = 0;
+const long interval = 20000;  // 20 seconds
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+
+  // Attach servo motors to GPIOs
+  servo_v.attach(13);         // Vertical servo
+  servo_h.attach(4);          // Horizontal servo
+  cleaning_motor.attach(14);  // Cleaning servo motor
+
+  // Initial positions
+  servo_v.write(90);
+  servo_h.write(90);
+  cleaning_motor.write(0); // Start at 0 degrees
+
+  // Initialize LED
+  pinMode(led4, OUTPUT);
+
+  // Connect to WiFi
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected");
+
+  ThingSpeak.begin(client);
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, password);
+}
+
+// Blynk handlers
+BLYNK_WRITE(V1) {  // Cleaning servo control
+  int value = param.asInt();
+  if (value == 1) {
+    Serial.println("Starting servo sequence...");
+    delay(3000);  // Wait for 3 seconds  
+    cleaning_motor.write(180);  // Rotate to 180 degrees
+    Serial.println("Rotated to 180 degrees");
+    delay(1000);  // Wait for 3 seconds
+    cleaning_motor.write(0);  // Return to 0 degrees
+    Serial.println("Returned to 0 degrees");
+    delay(1000);  // Wait for 3 seconds  
+    cleaning_motor.write(180);  // Rotate to 180 degrees
+    Serial.println("Rotated to 180 degrees");
+    delay(1000);  // Wait for 3 seconds
+    cleaning_motor.write(0);  // Return to 0 degrees
+    Serial.println("Returned to 0 degrees");
+  }
+}
+
+BLYNK_WRITE(V4) { digitalWrite(led4, param.asInt()); }
+
+void sendData(float voltage, int maxLDR) {
+  ThingSpeak.setField(1, voltage);  // Voltage
+  ThingSpeak.setField(2, maxLDR);   // Max LDR value
+
+  int status = ThingSpeak.writeFields(channelID, writeAPIKey);
+  if (status == 200) {
+    Serial.println("Data sent to ThingSpeak successfully");
+  } else {
+    Serial.printf("ThingSpeak send failed. HTTP status: %d\n", status);
+  }
+}
+
+void loop() {
+  Blynk.run();
+
+  // Read sensors
+  int rawVoltage = analogRead(voltagePin);
+  float voltage = (rawVoltage / 1023.0) * 25.391;
+
+  int ldr1 = analogRead(ldr1Pin); // East
+  int ldr2 = analogRead(ldr2Pin); // West
+  int ldr3 = analogRead(ldr3Pin); // South
+  int ldr4 = analogRead(ldr4Pin); // North
+
+  float intensity1 = (ldr1 / 1023.0) * 100;
+  float intensity2 = (ldr2 / 1023.0) * 100;
+  float intensity3 = (ldr3 / 1023.0) * 100;
+  float intensity4 = (ldr4 / 1023.0) * 100;
+
+  Serial.printf("Voltage: %.2f V\n", voltage);
+  Serial.printf("LDR1: %.1f%% | LDR2: %.1f%% | LDR3: %.1f%% | LDR4: %.1f%%\n", intensity1, intensity2, intensity3, intensity4);
+
+  // Servo movement logic (corrected as per instructions)
+  if (intensity4 > intensity1 && intensity4 > intensity2 && intensity4 > intensity3) {
+    Serial.println("Moving to North");
+    servo_v.write(110); // 20° clockwise (90° + 20°)
+    servo_h.write(90);  // Unchanged from original code
+  } else if (intensity3 > intensity1 && intensity3 > intensity2 && intensity3 > intensity4) {
+    Serial.println("Moving to South");
+    servo_v.write(70);  // 20° counterclockwise (90° - 20°)
+    servo_h.write(90);  // Unchanged from original code
+  } else if (intensity1 > intensity2 && intensity1 > intensity3 && intensity1 > intensity4) {
+    Serial.println("Moving to East");
+    servo_h.write(0);   // 90° counterclockwise (90° - 90°)
+    servo_v.write(110); // 20° clockwise (90° + 20°)
+  } else if (intensity2 > intensity1 && intensity2 > intensity3 && intensity2 > intensity4) {
+    Serial.println("Moving to West");
+    servo_h.write(180); // 90° clockwise (90° + 90°)
+    servo_v.write(70);  // 20° counterclockwise (90° - 20°)
+  } else {
+    Serial.println("Returning to original position");
+    servo_v.write(90);  // Unchanged from original code
+    servo_h.write(90);  // Unchanged from original code
+  }
+
+  // Periodically send data to ThingSpeak
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+    int maxLDR = max(max(ldr1, ldr2), max(ldr3, ldr4));
+    sendData(voltage, maxLDR);
+  }
+
+  delay(1000); // Delay for smooth servo motion
+}
